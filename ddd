@@ -1,0 +1,1228 @@
+// App.jsx — Esoteric Geotemporal Atlas (Pro UI • Offline • 20+ Traditions)
+// One-file build: paste into src/App.jsx and run `npm run dev`.
+// Dependencies: react, react-globe.gl, three, rc-slider (for TimeFilter component)
+import React, {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
+import TimeFilter from "./components/TimeFilter";
+import Globe from "react-globe.gl";
+
+// ---------- UI layers / constants ----------
+const Z_GLOBE = 10, Z_HEADER = 50, Z_SIDEBAR = 40, Z_POPUP = 60, Z_PDF = 70;
+const HOVER_THROTTLE_MS = 25;
+
+// ---------- small utils ----------
+const isPrim = v => v == null || ["string","number","boolean"].includes(typeof v);
+const S = v => (isPrim(v) ? (v == null ? "" : String(v)) : "");
+const J = (arr, sep=" • ") => (Array.isArray(arr) ? arr.map(S).filter(Boolean).join(sep) : "");
+const fmtYear = y => (typeof y !== "number" || !isFinite(y) ? "" : y < 0 ? `${Math.abs(y)} BCE` : `${y} CE`);
+const normKey = v => String(v || "")
+  .normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+  .replace(/[^\w ()\-·\/]/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+
+function colorForFamily(f) {
+  const k = (f || "").toLowerCase();
+  if (k.includes("abrahamic")) return "#ef4444";
+  if (k.includes("chinese")) return "#22c55e";
+  if (k.includes("indian")) return "#a855f7";
+  if (k.includes("southeast")) return "#eab308";
+  if (k.includes("east")) return "#06b6d4";
+  if (k.includes("iranian") || k.includes("persian")) return "#f97316";
+  if (k.includes("hellenistic")) return "#06b6d4";
+  if (k.includes("western esoteric")) return "#38bdf8";
+  if (k.includes("indigenous")) return "#84cc16";
+  return "#0ea5e9";
+}
+
+// Temporary icon glyphs (fast). (Future: swap to SVG sprites)
+const ICON_CHAR = {
+  tree_of_life: "✡︎",
+  tree_of_life_lurianic: "✡︎",
+  orthodox_cross: "✝",
+  cross_halo: "✙",
+  tasbih_beads: "✵",
+  yin_yang_crucible: "☯",
+  dharma_wheel: "☸",
+  om_trident: "ॐ",
+  lotus: "🪷",
+  vajra: "🔱",
+  bodhi_leaf: "🍃",
+  caduceus: "☤",
+  pleroma_star: "✶",
+  phi_rosette: "✴",
+  rose_cross: "✝︎",
+  compass_square: "⟂",
+  ankh_ouroboros: "☥",
+  ouroboros: "◌",
+  zodiac_wheel: "⚟",
+  tarot_card: "🃏",
+  sigillum_tablet: "⬒",
+  unicursal_hexagram: "✡",
+  shaman_drum: "🪘",
+  om: "ॐ",
+  default: "◉"
+};
+
+// ==========================================================
+// PRELOADED DATA (offline). Replace/expand with your corpus.
+// ==========================================================
+const PRELOAD_TRADITIONS = [
+  // Abrahamic (Jewish/Christian/Islamic)
+  { id:"kabbalah_early", name:"Early Kabbalah (Provence/Spain)", family:"Abrahamic", iconKey:"tree_of_life", lat:41.63, lng:0.62, start_low:1100, start_high:1190, end_low:1500, end_high:1600, parentId:"" },
+  { id:"kabbalah_lurianic", name:"Lurianic Kabbalah (Safed)", family:"Abrahamic", iconKey:"tree_of_life_lurianic", lat:32.96, lng:35.49, start_low:1530, start_high:1530, end_low:1700, end_high:1700, parentId:"kabbalah_early" },
+  { id:"hesychasm", name:"Hesychasm (Eastern Christian)", family:"Abrahamic", iconKey:"orthodox_cross", lat:40.15, lng:24.33, start_low:1260, start_high:1260, end_low:1700, end_high:1800, parentId:"" },
+  { id:"christian_mysticism", name:"Christian Mysticism (Medieval/Early Modern)", family:"Abrahamic", iconKey:"cross_halo", lat:40.65, lng:-4.70, start_low:300, start_high:300, end_low:1700, end_high:1700, parentId:"" },
+  { id:"sufism", name:"Sufism (Islamic Mysticism)", family:"Abrahamic", iconKey:"tasbih_beads", lat:33.31, lng:44.36, start_low:800, start_high:800, end_low:2100, end_high:2100, parentId:"" },
+
+  // Chinese / East Asian
+  { id:"daoist_neidan", name:"Daoist Inner Alchemy (Neidan)", family:"Chinese", iconKey:"yin_yang_crucible", lat:34.30, lng:108.90, start_low:300, start_high:300, end_low:1800, end_high:1900, parentId:"" },
+
+  // Indian & related
+  { id:"early_buddhism", name:"Early Buddhism", family:"Indian", iconKey:"dharma_wheel", lat:25.60, lng:85.10, start_low:-500, start_high:-400, end_low:100, end_high:400, parentId:"" },
+  { id:"tantra_indic", name:"Tantra (Indic)", family:"Indian", iconKey:"om_trident", lat:34.08, lng:74.79, start_low:600, start_high:600, end_low:1400, end_high:1400, parentId:"" },
+  { id:"yoga", name:"Yoga (Classical & Hatha)", family:"Indian", iconKey:"lotus", lat:25.31, lng:82.97, start_low:-500, start_high:-500, end_low:2100, end_high:2100, parentId:"" },
+  { id:"vajrayana", name:"Vajrayana (Esoteric Buddhism)", family:"East Asian", iconKey:"vajra", lat:29.65, lng:91.12, start_low:650, start_high:650, end_low:2100, end_high:2100, parentId:"" },
+  { id:"thai_forest", name:"Thai Forest Tradition", family:"Southeast Asian", iconKey:"bodhi_leaf", lat:16.40, lng:102.80, start_low:1890, start_high:1900, end_low:2100, end_high:2100, parentId:"early_buddhism" },
+
+  // Hellenistic / Western esoteric
+  { id:"hermeticism", name:"Hermeticism (Late Antique)", family:"Hellenistic / Western Esoteric", iconKey:"caduceus", lat:31.20, lng:29.90, start_low:100, start_high:100, end_low:400, end_high:400, parentId:"" },
+  { id:"gnosticism", name:"Gnosticism (Late Antique)", family:"Hellenistic / Western Esoteric", iconKey:"pleroma_star", lat:31.80, lng:34.70, start_low:50, start_high:50, end_low:350, end_high:350, parentId:"" },
+  { id:"neoplatonism", name:"Neoplatonism", family:"Hellenistic / Western Esoteric", iconKey:"phi_rosette", lat:37.98, lng:23.72, start_low:250, start_high:250, end_low:550, end_high:550, parentId:"" },
+  { id:"rosicrucian", name:"Rosicrucianism", family:"Western Esoteric", iconKey:"rose_cross", lat:50.11, lng:8.68, start_low:1614, start_high:1614, end_low:1700, end_high:1700, parentId:"" },
+  { id:"freemasonry", name:"Freemasonry (Speculative)", family:"Western Esoteric", iconKey:"compass_square", lat:51.50, lng:-0.12, start_low:1717, start_high:1717, end_low:2100, end_high:2100, parentId:"" },
+  { id:"theosophy", name:"Theosophy (Modern)", family:"Western Esoteric", iconKey:"ankh_ouroboros", lat:40.71, lng:-74.01, start_low:1875, start_high:1875, end_low:2100, end_high:2100, parentId:"" },
+  { id:"alchemy_west", name:"Alchemy (Western)", family:"Western Esoteric", iconKey:"ouroboros", lat:50.08, lng:14.43, start_low:200, start_high:200, end_low:1700, end_high:1700, parentId:"" },
+  { id:"astrology_west", name:"Astrology (Western)", family:"Hellenistic / Western Esoteric", iconKey:"zodiac_wheel", lat:32.54, lng:44.42, start_low:-1800, start_high:-1800, end_low:1700, end_high:1700, parentId:"" },
+  { id:"tarot_occult", name:"Tarot (Occult Revival)", family:"Western Esoteric", iconKey:"tarot_card", lat:48.85, lng:2.35, start_low:1780, start_high:1780, end_low:2100, end_high:2100, parentId:"" },
+  { id:"enochian", name:"Enochian Magic (Dee/Kelley)", family:"Western Esoteric", iconKey:"sigillum_tablet", lat:51.51, lng:-0.13, start_low:1582, start_high:1582, end_low:2100, end_high:2100, parentId:"" },
+  { id:"thelema", name:"Thelema", family:"Western Esoteric", iconKey:"unicursal_hexagram", lat:30.04, lng:31.24, start_low:1904, start_high:1904, end_low:2100, end_high:2100, parentId:"" },
+
+  // Global / Indigenous
+  { id:"shamanism", name:"Shamanism (Eurasian Core)", family:"Indigenous / Global", iconKey:"shaman_drum", lat:60.00, lng:100.00, start_low:-5000, start_high:-5000, end_low:2100, end_high:2100, parentId:"" },
+
+  // Upstream influence (for relationships)
+  { id:"upanishadic_vedanta", name:"Upanishadic Vedanta", family:"Indian", iconKey:"om", lat:29.96, lng:76.85, start_low:-800, start_high:-800, end_low:2100, end_high:2100, parentId:"" }
+];
+
+// Scholarly profiles keyed by normalized name.
+const PRELOAD_PROFILES = (() => {
+  const m = new Map();
+
+  // --- ABRAHAMIC ---
+  m.set(normKey("Early Kabbalah (Provence/Spain)"), {
+    overview: [
+      "Summary Context",
+      "Kabbalah crystallized in 12th–13th-century Provence and Castile, drawing on rabbinic and Merkabah strands. It presents a symbolic cosmology of Ein Sof (the Infinite) and ten sefirot by which divine vitality structures creation. Devotional-ethical practice aligns intention (kavvanah) and mitzvot with cosmic repair (tikkun).",
+      "Core Concepts",
+      "• Ein Sof (the Infinite) • Sefirot (emanations) • Shekhinah (indwelling Presence) • Tikkun (repair) • Devekut (cleaving).",
+      "Historical Phases",
+      "Heikhalot/Merkabah roots → Bahir (late 12th c.) → Zoharic corpus (late 13th c., Castile) → Safed/Lurianic turn (16th c.).",
+      "Aim & Practice",
+      "Devekut and ethical sanctification; symbolic exegesis; contemplations on divine names/sefirot."
+    ].join("\n\n"),
+    techniques: [
+      { name:"Kavvanot in Prayer", steps:["Set intention per blessing","Contemplate sefirotic correspondences","Orient toward tikkun (repair)"] },
+      { name:"Letter Permutations", steps:["Select divine-name letter set","Cycle permutations with breath","Contemplate emanative flow"] }
+    ],
+    lifestyle: { ethos:"devekut, ethical repair, sanctification of daily life" },
+    texts: [
+      { title:"Sefer ha-Bahir", author:"anon.", date:"12th c.", genre:"symbolic exegesis", link:"https://archive.org/details/Bahir_201402" },
+      { title:"Zohar (tr. selections)", author:"attrib. R. Shimon bar Yochai / Moses de León", date:"13th c.", genre:"mystical commentary", link:"https://www.sefaria.org/texts/Kabbalah/Zohar" }
+    ],
+    sources: [
+      "Gershom Scholem, Major Trends in Jewish Mysticism (Schocken, 1941).",
+      "Moshe Idel, Kabbalah: New Perspectives (Yale, 1988).",
+      "Daniel C. Matt (ed.), The Zohar: Pritzker Edition (Stanford, 2004–)."
+    ],
+    docs: []
+  });
+
+  m.set(normKey("Lurianic Kabbalah (Safed)"), {
+    overview: [
+      "Summary Context",
+      "In 16th-century Safed, Isaac Luria reframed Kabbalah around tzimtzum (divine contraction), shevirah (shattering of vessels), and tikkun (repair). Ritual precision and kavvanot became participation in cosmic restoration.",
+      "Core Concepts",
+      "• Tzimtzum • Shevirat ha-kelim • Nitzotzot (sparks) • Yiḥudim (unifications).",
+      "Aim & Practice",
+      "Prayer-intentions, penitence, ethical rectification; restoration of harmony among sefirot and Shekhinah."
+    ].join("\n\n"),
+    techniques: [
+      { name:"Yiḥudim (Unifications)", steps:["Align divine names within specific prayers","Maintain focused intention through sequences"] },
+      { name:"Kavanot of the Amidah", steps:["Map blessings to sefirot","Sustain contemplative focus throughout the service"] }
+    ],
+    lifestyle: { ethos:"repentance, precision in ritual, ethical repair" },
+    texts: [
+      { title:"Etz Ḥayyim", author:"Ḥayyim Vital (attrib. Luria)", date:"16th c.", genre:"systematic kabbalah", link:"" },
+      { title:"Shaʿar ha-Kavanot", author:"Ḥayyim Vital", date:"16th c.", genre:"prayer intentions", link:"" }
+    ],
+    sources: [
+      "Lawrence Fine, Physician of the Soul, Healer of the Cosmos (Stanford, 2003).",
+      "Moshe Idel, Kabbalah & Eros (Yale, 2005)."
+    ],
+    docs: []
+  });
+
+  m.set(normKey("Hesychasm (Eastern Christian)"), {
+    overview: [
+      "Summary Context",
+      "Hesychasm (ἡσυχασμός, “stillness”) is an Eastern Christian discipline of inner quiet, the Jesus Prayer, and vigilant watchfulness (νήψις). In the 14th century, Gregory Palamas articulated the distinction of unknowable divine essence and uncreated energies; Constantinopolitan synods (1341/1347/1351) affirmed this theology.",
+      "Core Concepts",
+      "• Hēsychia (stillness) • Jesus Prayer • Nepsis (watchfulness) • Theosis (deification) • Uncreated Light.",
+      "Aim & Practice",
+      "Purification of the heart and continuous prayer under spiritual discernment; illumination and theosis."
+    ].join("\n\n"),
+    techniques: [
+      {
+        name:"Jesus Prayer (with breath)",
+        steps:[
+          "Posture: seated, spine aligned; chin slightly inclined.",
+          "Inhale: 'Lord Jesus Christ, Son of God'; Exhale: 'have mercy on me.'",
+          "Attention anchor: heart region; reduce subvocalization over time."
+        ],
+        context:"Practice under a spiritual elder; integrate watchfulness (nepsis).",
+        variants:["Prayer-rope pacing","Silent invocation"],
+        cautions:"Risk of psychosomatic strain; pastoral oversight recommended."
+      },
+      {
+        name:"Watchfulness (Nepsis)",
+        steps:["Observe thoughts at arising","Reject tempting logismoi without dialogue","Return attention to the Prayer"]
+      }
+    ],
+    lifestyle: {
+      ethos:"stillness, humility, obedience, charity",
+      rules:["Byzantine fasting cycles","night office","spiritual direction (geron)"],
+      diet:"calendar-based abstinence",
+      community:"monastic; eremitic cells within cenobitic structures"
+    },
+    texts: [
+      { title:"The Triads", author:"Gregory Palamas", date:"14th c.", genre:"theology", link:"https://www.saintnicodemos.org/files/The-Triads.pdf" },
+      { title:"Philokalia (selections)", author:"Various", date:"18th c. comp.", genre:"anthology", link:"https://www.holytexts.com/chr/philokalia.htm" }
+    ],
+    sources: [
+      "John Meyendorff, A Study of St. Gregory Palamas (SVS Press, 1998).",
+      "Kallistos Ware, The Power of the Name (SLG Press, 1974)."
+    ],
+    docs: []
+  });
+
+  m.set(normKey("Christian Mysticism (Medieval/Early Modern)"), {
+    overview: [
+      "Summary Context",
+      "Christian mysticism emphasizes direct experiential knowledge of God through contemplative prayer, ascetic purification, and love. Western currents include Hildegard, Eckhart, Teresa of Ávila, and John of the Cross; Eastern currents culminate in Hesychasm.",
+      "Themes",
+      "Purgation → illumination → union; apophatic theology (unknowing) and affective devotion (love)."
+    ].join("\n\n"),
+    techniques: [
+      { name:"Lectio Divina", steps:["Read (lectio)","Meditate (meditatio)","Pray (oratio)","Contemplate (contemplatio)"] },
+      { name:"Silent Contemplation", steps:["Posture of stillness","Observe thoughts non-reactively","Rest in God"] }
+    ],
+    lifestyle: { ethos:"charity, humility, obedience, liturgical rhythm" },
+    texts: [
+      { title:"Interior Castle", author:"Teresa of Ávila", date:"1577", genre:"mystical theology", link:"https://www.ccel.org/ccel/teresa/castle2" },
+      { title:"Dark Night of the Soul", author:"John of the Cross", date:"16th c.", genre:"mystical theology", link:"https://www.ccel.org/ccel/johnofthecross/dark_night" }
+    ],
+    sources: [
+      "Bernard McGinn, The Foundations of Mysticism (Crossroad, 1991).",
+      "Andrew Louth, The Origins of the Christian Mystical Tradition (Oxford, 1981)."
+    ],
+    docs: []
+  });
+
+  m.set(normKey("Sufism (Islamic Mysticism)"), {
+    overview: [
+      "Summary Context",
+      "Sufism is Islam’s interior path of love-knowledge (ma‘rifa) aimed at polishing the heart for remembrance of God (dhikr). Organized into turuq (orders) from the 12th c., Sufism blends Qur’anic devotion with stations (maqamat) and states (ahwal) overseen by a shaykh.",
+      "Core Ideas",
+      "• Dhikr (remembrance) • Divine love • Fanā’/Baqā’ (annihilation/abiding) • Sohbet (companionship)."
+    ].join("\n\n"),
+    techniques: [
+      { name:"Dhikr (remembrance)", steps:["Invoke divine names","Coordinate breath and posture","Sustain heart-focused awareness"] },
+      { name:"Muraqabah (meditation)", steps:["Quiet sitting","Witness inner flow","Return to divine awareness"] }
+    ],
+    lifestyle: { ethos:"devotion, service, humility; within Shariah" },
+    texts: [
+      { title:"Mathnawī", author:"Rumi", date:"13th c.", genre:"poetic teaching", link:"https://www.sacred-texts.com/isl/masnavi/" },
+      { title:"Iḥyā’ ‘Ulūm al-Dīn", author:"al-Ghazali", date:"11th c.", genre:"ethics/devotion", link:"" }
+    ],
+    sources: [
+      "Annemarie Schimmel, Mystical Dimensions of Islam (UNC, 1975).",
+      "Alexander Knysh, Sufism: A New History (Princeton, 2017)."
+    ],
+    docs: []
+  });
+
+  // --- CHINESE / EAST ASIAN ---
+  m.set(normKey("Daoist Inner Alchemy (Neidan)"), {
+    overview: [
+      "Summary Context",
+      "Neidan (內丹) internalizes alchemy: the body is the crucible for refining essence (jing), breath/energy (qi), and spirit (shen). Song–Yuan systems integrate yin–yang, Five Phases, inner “firing times,” visualization, breath, and ethics."
+    ].join("\n\n"),
+    techniques: [
+      { name:"Embryonic Breathing", steps:["Slow abdominal breath","Tongue to palate","Descend breath to lower dantian"] },
+      { name:"Microcosmic Orbit", steps:["Guide qi up Du to crown","Descend via Ren to dantian","Repeat without strain"], cautions:"Stop if heat/dizziness; avoid forcing."}
+    ],
+    lifestyle: { ethos:"clarity, emptiness, moral cultivation; quiet-sitting (jingzuo)" },
+    texts: [
+      { title:"Wuzhen pian (tr.)", author:"Zhang Boduan", date:"11th c.", genre:"poetic manual", link:"https://terebess.hu/zen/mesterek/Wuzhen.pdf" },
+      { title:"Cantong qi", author:"Wei Boyang (attrib.)", date:"Han/medieval", genre:"classic", link:"" }
+    ],
+    sources: [
+      "Fabrizio Pregadio (ed.), Encyclopedia of Taoism (Routledge, 2008).",
+      "Livia Kohn, Daoism and Chinese Culture (Three Pines, 2001)."
+    ],
+    docs: []
+  });
+
+  // --- INDIAN / BUDDHIST ---
+  m.set(normKey("Early Buddhism"), {
+    overview: [
+      "Summary Context",
+      "Early Buddhism designates teachings traced to the Buddha prior to developed Mahāyāna systems. It aims at cessation of suffering (dukkha) and liberation (nirvāṇa) via virtue (sīla), meditation (samādhi), and wisdom (paññā)."
+    ].join("\n\n"),
+    techniques: [
+      { name:"Mindfulness (Sati)", steps:["Anchor attention on breath/body","Note phenomena non-reactively","Return gently when distracted"] },
+      { name:"Jhāna cultivation", steps:["Ethical preparation","Steady attention on a single object","Enter progressive absorptions"] }
+    ],
+    lifestyle: { ethos:"virtue, restraint, alms-round; monastic vinaya for monks/nuns" },
+    texts: [
+      { title:"Dhammapada", author:"", date:"c. 3rd c. BCE–2nd c. BCE", genre:"verse", link:"https://www.accesstoinsight.org/tipitaka/kn/dhp/index.html" },
+      { title:"Majjhima Nikāya", author:"", date:"canonical", genre:"discourses", link:"" }
+    ],
+    sources: [
+      "Rupert Gethin, The Foundations of Buddhism (Oxford, 1998).",
+      "Bhikkhu Analayo, Satipaṭṭhāna (Windhorse, 2003)."
+    ],
+    docs: []
+  });
+
+  m.set(normKey("Tantra (Indic)"), {
+    overview: [
+      "Summary Context",
+      "Indic Tantra developed within Śaiva/Śākta contexts and later in Vajrayāna Buddhism. It sacralizes the body and world as manifestations of divine power, employing initiation, mantra, mudrā, maṇḍala, deity-yoga, and sometimes transgressive rites to accelerate realization."
+    ].join("\n\n"),
+    techniques: [
+      { name:"Mantra Japa", steps:["Receive mantra in initiation","Recite with breath cadence","Maintain visualization of deity/yantra"] },
+      { name:"Nyāsa", steps:["Touch/visualize mantras on body loci","Seal with mudrā","Stabilize in deity identity"] }
+    ],
+    lifestyle: { ethos:"guru-disciple discipline; vows (samaya) in some streams" },
+    texts: [
+      { title:"Kularnava Tantra", author:"", date:"medieval", genre:"ritual/theory", link:"" },
+      { title:"Vijñāna-Bhairava", author:"", date:"Kashmir Shaivism", genre:"practice aphorisms", link:"" }
+    ],
+    sources: [
+      "Alexis Sanderson, “Śaivism and the Tantric Traditions” (CUP).",
+      "Gavin Flood, The Tantric Body (I.B. Tauris, 2006)."
+    ],
+    docs: []
+  });
+
+  m.set(normKey("Yoga (Classical & Hatha)"), {
+    overview: [
+      "Summary Context",
+      "Yoga is a family of disciplines in India aiming at liberation (moksha) and union with the Absolute. Classical Yoga (Patañjali) outlines eight limbs culminating in samādhi; medieval Haṭha texts integrate postures, breath, and subtle-body methods."
+    ].join("\n\n"),
+    techniques: [
+      { name:"Asana + Pranayama", steps:["Ethical precepts (yamas/niyamas)","Stabilize posture","Regulate breath (nadi shodhana, kumbhaka)"] },
+      { name:"Dhyana → Samadhi", steps:["Single-pointed attention","Effortless absorption","Non-dual insight (per commentarial traditions)"] }
+    ],
+    lifestyle: { ethos:"yamas/niyamas; discipline; sādhanā cadence" },
+    texts: [
+      { title:"Yoga Sūtras", author:"Patañjali", date:"c. 2nd c. BCE–5th c. CE (disputed)", genre:"aphorisms", link:"https://www.sacred-texts.com/hin/yogasutr/index.htm" },
+      { title:"Haṭha Yoga Pradipika", author:"Svatmarama", date:"15th c.", genre:"manual", link:"" }
+    ],
+    sources: [
+      "Edwin Bryant (tr.), The Yoga Sūtras of Patañjali (North Point, 2009).",
+      "James Mallinson & Mark Singleton, Roots of Yoga (Penguin, 2017)."
+    ],
+    docs: []
+  });
+
+  m.set(normKey("Vajrayana (Esoteric Buddhism)"), {
+    overview: [
+      "Summary Context",
+      "Vajrayāna augments Mahāyāna with deity-yoga, mantra, mudrā, and maṇḍala to realize enlightenment swiftly. Transmitted from India to Tibet and East Asia, it emphasizes ‘taking the result as the path’ under guru initiation."
+    ].join("\n\n"),
+    techniques: [
+      { name:"Deity-yoga (Yidam)", steps:["Receive empowerment","Visualize deity and mandala","Recite mantra with samādhi"] },
+      { name:"Inner Heat (Tummo)", steps:["Subtle-body breath holds","Bandhas and visualization","Stabilize bliss–emptiness"] }
+    ],
+    lifestyle: { ethos:"samaya vows; retreat cycles; guru-yoga" },
+    texts: [
+      { title:"Hevajra Tantra", author:"", date:"medieval", genre:"tantric root", link:"" },
+      { title:"Guhyasamāja Tantra", author:"", date:"medieval", genre:"tantric root", link:"" }
+    ],
+    sources: [
+      "David Snellgrove, Indo-Tibetan Buddhism (Shambhala).",
+      "Alex Wayman, Yoga of the Guhyasamajatantra (Motilal)."
+    ],
+    docs: []
+  });
+
+  m.set(normKey("Thai Forest Tradition"), {
+    overview: [
+      "Summary Context",
+      "A 20th-century Theravāda renewal emphasizing wilderness asceticism (dhutaṅga), rigorous meditation, and direct teacher guidance (Ajahn Mun, Ajahn Chah). Focus on mindfulness, jhāna, and insight in simple communal settings."
+    ].join("\n\n"),
+    techniques: [
+      { name:"Dhutaṅga Austerities", steps:["Alms-round","One meal a day (varies)","Forest seclusion"] },
+      { name:"Satipaṭṭhāna", steps:["Mindfulness of body/feeling/mind/dhammas","Continuous awareness","Investigate clinging"] }
+    ],
+    lifestyle: { ethos:"renunciation, simplicity, discipline" },
+    texts: [
+      { title:"A Still Forest Pool", author:"Ajahn Chah", date:"", genre:"discourses", link:"https://www.ajahnchah.org/book/A_Still_Forest_Pool.pdf" }
+    ],
+    sources: [
+      "Ajahn Maha Boowa, Acariya Mun Bhuridatta Thera (Forest Dhamma, 2008).",
+      "Ajahn Chah, Food for the Heart (Wisdom, 2002)."
+    ],
+    docs: []
+  });
+
+  // --- HELLENISTIC / WESTERN ESOTERIC ---
+  m.set(normKey("Hermeticism (Late Antique)"), {
+    overview: [
+      "Summary Context",
+      "Hermeticism arose in Hellenistic Egypt (2nd–3rd c. CE) as revelatory dialogues attributed to Hermes Trismegistus. It teaches a monotheistic, emanationist cosmology and the path of gnosis (rebirth of the mind) through contemplation and ritual arts (alchemy, astrology, theurgy)."
+    ].join("\n\n"),
+    techniques: [
+      { name:"Theurgic Contemplation", steps:["Purify via virtue","Contemplate Nous and cosmic sympathy","Ritual alignment (as tradition allows)"] }
+    ],
+    lifestyle: { ethos:"philosophical purification; contemplative inquiry" },
+    texts: [
+      { title:"Corpus Hermeticum (tr. Mead)", author:"", date:"antique", genre:"dialogues", link:"https://www.sacred-texts.com/cla/gh/index.htm" },
+      { title:"Asclepius", author:"", date:"antique", genre:"dialogue", link:"" }
+    ],
+    sources: [
+      "Brian P. Copenhaver (tr.), Hermetica (Cambridge, 1992).",
+      "Garth Fowden, The Egyptian Hermes (Princeton, 1993)."
+    ],
+    docs: []
+  });
+
+  m.set(normKey("Gnosticism (Late Antique)"), {
+    overview: [
+      "Summary Context",
+      "Gnostic sects (1st–3rd c.) sought salvation through gnosis—awakening the divine spark from a flawed material world fashioned by a lesser Demiurge."
+    ].join("\n\n"),
+    techniques: [
+      { name:"Initiatory Catechesis (varied)", steps:["Study mythic cosmology","Ritual acts (sect-specific)","Contemplative ascent motifs"] }
+    ],
+    lifestyle: { ethos:"varied (ascetic to libertine in polemics; scholarship nuanced)" },
+    texts: [
+      { title:"Nag Hammadi Library (portal)", author:"", date:"4th c. codices", genre:"Gnostic scriptures", link:"http://www.gnosis.org/naghamm/nhl.html" }
+    ],
+    sources: [
+      "Kurt Rudolph, Gnosis (Harper, 1987).",
+      "Bentley Layton (ed.), The Gnostic Scriptures (Doubleday, 1987)."
+    ],
+    docs: []
+  });
+
+  m.set(normKey("Neoplatonism"), {
+    overview: [
+      "Summary Context",
+      "A mystical-philosophical tradition (3rd–5th c.) of Plotinus, Porphyry, Iamblichus, and Proclus. Reality emanates from the ineffable One → Nous → World-Soul. The soul ascends by virtue and contemplation; later theurgy ritually aligns with divine powers."
+    ].join("\n\n"),
+    techniques: [
+      { name:"Contemplative Ascent", steps:["Ethical purification","Dialectic/contemplation","Ecstatic union (henosis)"] }
+    ],
+    lifestyle: { ethos:"virtue-ethics; contemplative discipline" },
+    texts: [
+      { title:"Plotinus — Enneads (index)", author:"", date:"3rd c.", genre:"philosophy", link:"https://www.perseus.tufts.edu/hopper/text?doc=Plot.%20Enn." }
+    ],
+    sources: [
+      "A.H. Armstrong (ed.), Plotinus (Loeb).",
+      "Gregory Shaw, Theurgy and the Soul (Penn State, 1995)."
+    ],
+    docs: []
+  });
+
+  m.set(normKey("Rosicrucianism"), {
+    overview: [
+      "Summary Context",
+      "A 17th-century esoteric current sparked by the Fama/Confessio and Chymical Wedding manifestos (1614–1616), positing a reformatory brotherhood of enlightened adepts. It synthesized Christian piety with Hermetic-Kabbalistic-alchemical motifs."
+    ].join("\n\n"),
+    techniques: [
+      { name:"Symbolic Initiation (later groups)", steps:["Study manifestos","Ritualized grades (varies)","Alchemical contemplation"] }
+    ],
+    lifestyle: { ethos:"moral reform; intellectual inquiry; service" },
+    texts: [
+      { title:"Fama/Confessio/Chymical Wedding", author:"", date:"1614–1616", genre:"manifestos/allegory", link:"https://www.sacred-texts.com/sro/rcc/index.htm" }
+    ],
+    sources: [
+      "Frances Yates, The Rosicrucian Enlightenment (Routledge, 1972).",
+      "Christopher McIntosh, The Rosicrucians (Weiser, 1998)."
+    ],
+    docs: []
+  });
+
+  m.set(normKey("Freemasonry (Speculative)"), {
+    overview: [
+      "Summary Context",
+      "An initiatory fraternity (from 1717) using craft-guild symbolism to impart moral and metaphysical lessons. The lodge dramatizes building the inner temple, invoking the Great Architect within a mythic framework (Solomon’s Temple, Hiram Abiff)."
+    ].join("\n\n"),
+    techniques: [
+      { name:"Degree Work", steps:["Ceremonial initiation","Catechetical lectures","Symbolic study"] }
+    ],
+    lifestyle: { ethos:"self-perfection, fraternity, charity" },
+    texts: [
+      { title:"Anderson’s Constitutions (1723)", author:"James Anderson", date:"1723", genre:"organizational", link:"https://archive.org/details/constitutionsofm00ande" }
+    ],
+    sources: [
+      "David Stevenson, The Origins of Freemasonry (Cambridge, 1988).",
+      "Jessica Harland-Jacobs, Builders of Empire (UNC, 2007)."
+    ],
+    docs: []
+  });
+
+  m.set(normKey("Theosophy (Modern)"), {
+    overview: [
+      "Summary Context",
+      "Founded 1875 (Blavatsky et al.), Theosophy blends Western occultism with Indic philosophies, teaching an emanationist cosmology, karma/reincarnation, and Masters guiding human evolution. It catalyzed cross-cultural esotericism and the New Age."
+    ].join("\n\n"),
+    techniques: [
+      { name:"Study & Meditation", steps:["Group study","Contemplation on planes/karma","Service/ethics"] }
+    ],
+    lifestyle: { ethos:"universal brotherhood; comparative inquiry" },
+    texts: [
+      { title:"The Secret Doctrine (online)", author:"H.P. Blavatsky", date:"1888", genre:"synthesis", link:"https://www.sacred-texts.com/the/sd/index.htm" }
+    ],
+    sources: [
+      "Joscelyn Godwin, The Theosophical Enlightenment (SUNY, 1994).",
+      "Bruce F. Campbell, Ancient Wisdom Revived (California, 1980)."
+    ],
+    docs: []
+  });
+
+  m.set(normKey("Alchemy (Western)"), {
+    overview: [
+      "Summary Context",
+      "A protean art/science of transformation (Greco-Egyptian → Islamic → European). Goals: chrysopoeia, elixir, and inner regeneration. Laboratory procedures mirror spiritual opus (nigredo-albedo-rubedo)."
+    ].join("\n\n"),
+    techniques: [
+      { name:"Calcination → Distillation", steps:["Purify matter through stages","Meditative correspondence with inner work"] }
+    ],
+    lifestyle: { ethos:"experiment + contemplation; medical spagyrics (premodern)" },
+    texts: [
+      { title:"Hermetic Museum (tr.)", author:"", date:"17th c. anthology", genre:"alchemical collection", link:"https://www.sacred-texts.com/alc/hm1/index.htm" }
+    ],
+    sources: [
+      "Lawrence Principe, The Secrets of Alchemy (Chicago, 2013).",
+      "Stanton J. Linden, Darke Hieroglyphicks (Kentucky, 1996)."
+    ],
+    docs: []
+  });
+
+  m.set(normKey("Astrology (Western)"), {
+    overview: [
+      "Summary Context",
+      "From Mesopotamian omen-lore to Hellenistic horoscopy, astrology reads celestial configurations as meaningful correspondences with earthly life; it intertwined with medicine and magic until the scientific revolution."
+    ].join("\n\n"),
+    techniques: [
+      { name:"Natal Charting", steps:["Cast chart (date/time/place)","Interpret signs/houses/aspects","Synthesize judgement"] }
+    ],
+    lifestyle: { ethos:"observational precision; ethical use (historically varied)" },
+    texts: [
+      { title:"Ptolemy — Tetrabiblos (tr.)", author:"", date:"2nd c.", genre:"treatise", link:"https://www.sacred-texts.com/astro/ptb/index.htm" }
+    ],
+    sources: [
+      "Nicholas Campion, A History of Western Astrology (Bloomsbury, 2008).",
+      "James Holden, A History of Horoscopic Astrology (AFA, 2006)."
+    ],
+    docs: []
+  });
+
+  m.set(normKey("Tarot (Occult Revival)"), {
+    overview: [
+      "Summary Context",
+      "15th-century Italian playing cards became an esoteric key in 18th-century France; 19th–20th-century occultists (Lévi, Golden Dawn, Waite, Crowley) mapped Major Arcana to Kabbalah and astrology."
+    ].join("\n\n"),
+    techniques: [
+      { name:"Divinatory Spreads", steps:["Shuffle and cut","Lay out spread (Celtic Cross, etc.)","Interpret imagery and positions"] }
+    ],
+    lifestyle: { ethos:"symbolic introspection; contemplative study" },
+    texts: [
+      { title:"Pictorial Key to the Tarot", author:"A.E. Waite", date:"1910", genre:"manual", link:"https://www.sacred-texts.com/tarot/pkt/index.html" }
+    ],
+    sources: [
+      "Michael Dummett, The Game of Tarot (Duckworth, 1980).",
+      "Ronald Decker & Michael Dummett, A History of the Occult Tarot (Duckworth, 2002)."
+    ],
+    docs: []
+  });
+
+  m.set(normKey("Enochian Magic (Dee/Kelley)"), {
+    overview: [
+      "Summary Context",
+      "A Renaissance angelic system (1582–1587) from John Dee and Edward Kelley: Angelical language, Calls, and Watchtower tablets for scrying and evocation; later adopted by the Golden Dawn."
+    ].join("\n\n"),
+    techniques: [
+      { name:"Scrying the Aethyrs", steps:["Consecrate space and tools","Recite Calls/Keys","Record visions"] }
+    ],
+    lifestyle: { ethos:"ritual discipline; visionary record-keeping" },
+    texts: [
+      { title:"John Dee — Diaries & Materials", author:"", date:"16th c.", genre:"magical records", link:"https://www.esotericarchives.com/dee/" }
+    ],
+    sources: [
+      "Stephen Skinner & David Rankine, Keys to the Gateway of Magic (Golden Hoard, 2005).",
+      "Lon Milo DuQuette, Enochian Vision Magick (Weiser, 2008)."
+    ],
+    docs: []
+  });
+
+  m.set(normKey("Thelema"), {
+    overview: [
+      "Summary Context",
+      "Crowley’s early-20th-century esoteric religion centered on True Will and the Æon of Horus, articulated in Liber AL vel Legis (1904); synthesizes ceremonial magick with yoga and Tantra."
+    ].join("\n\n"),
+    techniques: [
+      { name:"Liber Resh (solar adorations)", steps:["Four daily adorations","Orient to the Sun","Vibrate divine names"] }
+    ],
+    lifestyle: { ethos:"do what thou wilt (True Will); disciplined practice" },
+    texts: [
+      { title:"Liber AL vel Legis", author:"A. Crowley", date:"1904", genre:"received text", link:"https://www.sacred-texts.com/oto/engccxx.htm" }
+    ],
+    sources: [
+      "Richard Kaczynski, Perdurabo (North Atlantic, 2010).",
+      "Henrik Bogdan, Western Esotericism and Rituals of Initiation (SUNY, 2007)."
+    ],
+    docs: []
+  });
+
+  // --- GLOBAL / INDIGENOUS ---
+  m.set(normKey("Shamanism (Eurasian Core)"), {
+    overview: [
+      "Summary Context",
+      "A family of indigenous techniques wherein a shaman enters altered states to mediate between human and spirit worlds for healing, divination, and psychopomp work. Classic Eurasian forms feature drum-induced trance and soul-journeys along an axis mundi."
+    ].join("\n\n"),
+    techniques: [
+      { name:"Drumming Trance", steps:["Sustained rhythmic drumming","Fixed-point or imaginal journey","Return and integrate"] }
+    ],
+    lifestyle: { ethos:"service to community; culturally specific taboos/rites" },
+    texts: [
+      { title:"(Comparative ethnography; many oral lineages)", author:"", date:"", genre:"", link:"" }
+    ],
+    sources: [
+      "Mircea Eliade, Shamanism: Archaic Techniques of Ecstasy (Princeton, 1964).",
+      "Michael Harner, The Way of the Shaman (Harper, 1980)."
+    ],
+    docs: []
+  });
+
+  return m;
+})();
+
+// ---------- PDF viewer (inline) ----------
+function PdfModal({ url, onClose }) {
+  if (!url) return null;
+  const isPdf = /\.pdf(\?|#|$)/i.test(url);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setFailed(false);
+    const t = setTimeout(() => setFailed((f) => f || true), 5000);
+    return () => clearTimeout(t);
+  }, [url]);
+  return (
+    <div role="dialog" aria-modal="true"
+      style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.55)", zIndex:Z_PDF, display:"flex", alignItems:"center", justifyContent:"center" }}
+      onClick={onClose}>
+      <div onClick={(e)=>e.stopPropagation()}
+        style={{ width:"88vw", height:"84vh", background:"#fff", borderRadius:12, overflow:"hidden", boxShadow:"0 12px 36px rgba(0,0,0,0.35)", display:"flex", flexDirection:"column" }}>
+        <div style={{ display:"flex", alignItems:"center", padding:"8px 10px", borderBottom:"1px solid #e5e7eb" }}>
+          <div style={{ fontWeight:700, fontSize:14, flex:1, color:"#111827" }}>{isPdf ? "PDF Viewer" : "Document"}</div>
+          <a href={url} target="_blank" rel="noreferrer" style={{ marginRight:10, fontSize:12, color:"#1d4ed8" }}>Open in new tab</a>
+          <button onClick={onClose} aria-label="Close"
+            style={{ width:28, height:28, borderRadius:6, background:"#f3f4f6", border:"1px solid #e5e7eb" }}>×</button>
+        </div>
+        <div style={{ flex:1, background:"#f8fafc" }}>
+          {isPdf ? (
+            failed ? (
+              <div style={{ padding:16, fontSize:13 }}>
+                The PDF could not be embedded (blocked by source).{" "}
+                <a href={url} target="_blank" rel="noreferrer" style={{ color:"#1d4ed8" }}>Open in a new tab</a>.
+              </div>
+            ) : (
+              <iframe title="pdf" src={url} style={{ border:0, width:"100%", height:"100%" }}
+                onLoad={()=>setFailed(false)} onError={()=>setFailed(true)}
+                sandbox="allow-same-origin allow-scripts allow-forms allow-downloads allow-modals" allow="fullscreen"/>
+            )
+          ) : (
+            <div style={{ padding:16, fontSize:13 }}>
+              This item isn’t a PDF. <a href={url} target="_blank" rel="noreferrer" style={{ color:"#1d4ed8" }}>Open link</a>.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==========================================================
+// App
+// ==========================================================
+export default function App() {
+  const globeRef = useRef();
+  const [countries, setCountries] = useState([]);
+
+  // Data (offline)
+  const [allTraditions] = useState(() => PRELOAD_TRADITIONS);
+
+  // Filters & drilldown
+  const [selectedCats, setSelectedCats] = useState(new Set());
+  const [focusParentId, setFocusParentId] = useState(null);
+  const [showDenomsToggle, setShowDenomsToggle] = useState(true);
+
+  // Time filter
+  const [timeEnabled, setTimeEnabled] = useState(false);
+  const domainYears = useMemo(() => {
+    let minY = Infinity, maxY = -Infinity;
+    for (const t of allTraditions) {
+      const a = Number.isFinite(t.start_low) ? t.start_low : t.start_high;
+      const b = Number.isFinite(t.end_high) ? t.end_high : t.end_low;
+      if (Number.isFinite(a)) minY = Math.min(minY, a);
+      if (Number.isFinite(b)) maxY = Math.max(maxY, b);
+    }
+    if (!Number.isFinite(minY)) minY = -3000;
+    if (!Number.isFinite(maxY)) maxY = 2100;
+    minY = Math.max(minY, -3000);
+    maxY = Math.min(maxY, 2100);
+    if (minY >= maxY) { minY = -3000; maxY = 2100; }
+    return [minY, maxY];
+  }, [allTraditions]);
+  const [timeRange, setTimeRange] = useState([-3000, 2100]);
+  useEffect(() => { setTimeRange(domainYears); }, [domainYears[0], domainYears[1]]);
+
+  // Hover / select
+  const [hoverId, setHoverId] = useState(null);
+  const [selectedId, setSelectedId] = useState(null);
+
+  // Profiles cache (pre-seeded with long overviews)
+  const [profile, setProfile] = useState({ loading:false, overview:"", techniques:[], lifestyle:null, texts:[], sources:[], docs:[] });
+  const cache = useRef(new Map(PRELOAD_PROFILES));
+
+  // PDF modal
+  const [pdfUrl, setPdfUrl] = useState(null);
+
+  // Search
+  const [q, setQ] = useState("");
+  const dq = useDeferredValue(q);
+
+  // Countries polygons
+  useEffect(() => {
+    fetch("https://unpkg.com/three-globe/example/datasets/ne_110m_admin_0_countries.geojson")
+      .then(r=>r.json())
+      .then(g=>setCountries(Array.isArray(g?.features)?g.features:[]))
+      .catch(()=>setCountries([]));
+  }, []);
+
+  // Categories derived from data
+  const categories = useMemo(() => {
+    const map = new Map();
+    for (const t of allTraditions) {
+      const fam = S(t.family || "Unknown").trim();
+      if (!fam) continue;
+      if (!map.has(fam)) map.set(fam, { key: fam, count: 0 });
+      map.get(fam).count += 1;
+    }
+    return Array.from(map.values()).sort((a,b)=>b.count-a.count);
+  }, [allTraditions]);
+
+  // Parent/child index
+  const childrenByParent = useMemo(() => {
+    const m = new Map();
+    for (const t of allTraditions) {
+      const pid = S(t.parentId || "");
+      if (!pid) continue;
+      if (!m.has(pid)) m.set(pid, []);
+      m.get(pid).push(t);
+    }
+    return m;
+  }, [allTraditions]);
+
+  const bySelectedCats = useMemo(() => new Set([...selectedCats]), [selectedCats]);
+
+  // Time overlap helper
+  function overlapsWindow(t, win) {
+    if (!t) return false;
+    const a = Number.isFinite(t.start_high) ? t.start_high : t.start_low;
+    const b = Number.isFinite(t.end_low) ? t.end_low : t.end_high;
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+    return b >= win[0] && a <= win[1];
+  }
+
+  // Top-level filtered list
+  const filteredTopLevel = useMemo(() => {
+    const qlc = dq.trim().toLowerCase();
+    return allTraditions.filter((t) => {
+      const inCat = bySelectedCats.size === 0 ? false : bySelectedCats.has(t.family);
+      const isTop = !t.parentId;
+      const passQ = !qlc || t.name.toLowerCase().includes(qlc);
+      const passTime = !timeEnabled || overlapsWindow(t, timeRange);
+      return inCat && isTop && passQ && passTime;
+    });
+  }, [allTraditions, bySelectedCats, dq, timeEnabled, timeRange]);
+
+  // Children (denominations)
+  const visibleChildren = useMemo(() => {
+    if (!focusParentId) return [];
+    const kids = childrenByParent.get(focusParentId) || [];
+    const qlc = dq.trim().toLowerCase();
+    return kids.filter((t) => {
+      const passQ = !qlc || t.name.toLowerCase().includes(qlc);
+      const passTime = !timeEnabled || overlapsWindow(t, timeRange);
+      return passQ && passTime;
+    });
+  }, [focusParentId, childrenByParent, dq, timeEnabled, timeRange]);
+
+  // Final points to draw
+  const visiblePoints = useMemo(() => {
+    if (bySelectedCats.size === 0) return [];
+    if (showDenomsToggle && focusParentId) return visibleChildren;
+    return filteredTopLevel;
+  }, [bySelectedCats, showDenomsToggle, focusParentId, visibleChildren, filteredTopLevel]);
+
+  // Hover throttling
+  const setHoverIdThrottled = useMemo(() => {
+    let t = 0;
+    return (id) => {
+      const now = performance.now();
+      if (now - t > HOVER_THROTTLE_MS) {
+        t = now;
+        setHoverId(id);
+      }
+    };
+  }, []);
+
+  // Globe controls
+  useEffect(() => {
+    const g = globeRef.current; if (!g) return;
+    const ctrl = g.controls?.(); if (!ctrl) return;
+    ctrl.autoRotate = false;
+    ctrl.enableRotate = true;
+    ctrl.enableZoom = true;
+    ctrl.enablePan = false;
+    ctrl.enableDamping = true;
+    ctrl.dampingFactor = 0.08;
+    ctrl.rotateSpeed = 0.9;
+    ctrl.zoomSpeed = 0.7;
+
+    const el = g.renderer().domElement;
+    el.style.cursor = "grab";
+    const onDown = () => (el.style.cursor = "grabbing");
+    const onUp = () => (el.style.cursor = "grab");
+    el.addEventListener("pointerdown", onDown);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      el.removeEventListener("pointerdown", onDown);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, []);
+
+  // Selected tradition
+  const selected = useMemo(
+    () => visiblePoints.find(t => t.id === selectedId) || allTraditions.find(t => t.id === selectedId) || null,
+    [selectedId, visiblePoints, allTraditions]
+  );
+
+  // Load profile (offline cache only)
+  useEffect(() => {
+    if (!selected) {
+      setProfile({ loading:false, overview:"", techniques:[], lifestyle:null, texts:[], sources:[], docs:[] });
+      return;
+    }
+    const key = normKey(selected.name);
+    const have = cache.current.get(key);
+    if (have) {
+      setProfile({
+        loading:false,
+        overview:have.overview || "",
+        techniques:have.techniques || [],
+        lifestyle:have.lifestyle || null,
+        texts:have.texts || [],
+        sources:have.sources || [],
+        docs:have.docs || []
+      });
+    } else {
+      const shell = { overview:"No overview available yet.", techniques:[], lifestyle:null, texts:[], sources:[], docs:[] };
+      cache.current.set(key, shell);
+      setProfile({ loading:false, ...shell });
+    }
+  }, [selected?.id]);
+
+  // Click behavior
+  const onPointClick = useCallback((d) => {
+    if (!d?.id) return;
+    const hasKids = !!(childrenByParent.get(d.id)?.length);
+    if (showDenomsToggle && hasKids) {
+      setFocusParentId(d.id);
+      setSelectedId(null);
+      globeRef.current?.pointOfView({ lat:d.lat, lng:d.lng, altitude:1.5 }, 900);
+    } else {
+      setSelectedId(d.id);
+      globeRef.current?.pointOfView({ lat:d.lat, lng:d.lng, altitude:1.5 }, 900);
+    }
+  }, [childrenByParent, showDenomsToggle]);
+
+  // Hover preview
+  const hoverTrad = useMemo(() => visiblePoints.find(t => t.id === hoverId) || null, [hoverId, visiblePoints]);
+  const hoverPreview = useMemo(() => {
+    if (!hoverTrad) return null;
+    const key = normKey(hoverTrad.name);
+    const cached = cache.current.get(key) || {};
+    const ov = S(cached.overview || "");
+    const short = ov ? (ov.length > 320 ? ov.slice(0,320) + "…" : ov) : `${hoverTrad.name} — ${hoverTrad.family}`;
+    return {
+      id: hoverTrad.id,
+      name: hoverTrad.name,
+      family: hoverTrad.family,
+      range: `${fmtYear(hoverTrad.start_high ?? hoverTrad.start_low)} – ${fmtYear(hoverTrad.end_low ?? hoverTrad.end_high)}`,
+      text: short
+    };
+  }, [hoverTrad]);
+
+  // Sidebar helpers
+  function toggleCategory(cat){
+    setFocusParentId(null); setSelectedId(null);
+    setSelectedCats(prev => { const next = new Set(prev); next.has(cat) ? next.delete(cat) : next.add(cat); return next; });
+  }
+  function resetCategories(){ setSelectedCats(new Set()); setFocusParentId(null); setSelectedId(null); }
+  function backOneLevel(){ if (focusParentId) { setFocusParentId(null); setSelectedId(null); } }
+
+  // Points + labels + arcs
+  const pointsForGlobe = useMemo(() =>
+    visiblePoints.map(t => ({ id:t.id, lat:t.lat, lng:t.lng, text:t.name, family:t.family, color:colorForFamily(t.family) })),
+    [visiblePoints]
+  );
+
+  const labelsForGlobe = useMemo(() =>
+    visiblePoints.map(t => ({
+      id:t.id, lat:t.lat, lng:t.lng, color:colorForFamily(t.family),
+      icon: ICON_CHAR[t.iconKey] || ICON_CHAR.default
+    })), [visiblePoints]
+  );
+
+  const arcsForGlobe = useMemo(() => {
+    if (!focusParentId) return [];
+    const parent = allTraditions.find(t => t.id === focusParentId);
+    const kids = childrenByParent.get(focusParentId) || [];
+    if (!parent || !kids.length) return [];
+    return kids.map(k => ({
+      startLat: parent.lat, startLng: parent.lng,
+      endLat: k.lat, endLng: k.lng,
+      color: [colorForFamily(parent.family), colorForFamily(k.family)]
+    }));
+  }, [focusParentId, childrenByParent, allTraditions]);
+
+  return (
+    <div style={{ height:"100vh", width:"100vw", overflow:"hidden", fontFamily:"Inter, system-ui, -apple-system, Segoe UI" }}>
+      {/* Header */}
+      <div style={{
+        position:"fixed", top:0, left:0, right:0, height:56,
+        backdropFilter:"saturate(180%) blur(10px)", background:"rgba(8,12,20,0.9)",
+        display:"flex", alignItems:"center", padding:"0 16px", zIndex:Z_HEADER, color:"#f8fafc", borderBottom:"1px solid rgba(255,255,255,0.06)"
+      }}>
+        <div style={{ fontWeight:800, letterSpacing:0.2 }}>Esoteric Geotemporal Atlas</div>
+        <div style={{ marginLeft:10, opacity:0.7, fontSize:12 }}>Scholarly • Offline</div>
+        <div style={{ marginLeft:"auto", fontSize:12, opacity:0.85 }}>
+          {allTraditions.length} traditions
+        </div>
+      </div>
+
+      {/* Sidebar */}
+      <div style={{
+        position:"fixed", top:56, bottom:0, left:0, width:360,
+        background:"#0b1020", color:"#e5e7eb", borderRight:"1px solid rgba(255,255,255,0.08)",
+        zIndex:Z_SIDEBAR, padding:"16px 16px", overflowY:"auto"
+      }}>
+        <div style={{ fontWeight:800, fontSize:14, marginBottom:6 }}>Browse Categories</div>
+        <div style={{ display:"grid", gap:6 }}>
+          {categories.length === 0 ? (
+            <div style={{ fontSize:12, color:"#94a3b8" }}>No categories.</div>
+          ) : categories.map(c => (
+            <label key={c.key} style={{
+              display:"flex", alignItems:"center", gap:8, padding:"8px 10px",
+              borderRadius:10, border:"1px solid rgba(255,255,255,0.08)", background:"#0f172a"
+            }}>
+              <input type="checkbox" checked={selectedCats.has(c.key)} onChange={()=>toggleCategory(c.key)} />
+              <span style={{ flex:1 }}>{c.key}</span>
+              <span style={{ opacity:0.7, fontSize:12 }}>{c.count}</span>
+            </label>
+          ))}
+        </div>
+
+        <div style={{ display:"flex", gap:8, marginTop:12 }}>
+          <input
+            value={q}
+            onChange={e=>setQ(e.target.value)}
+            placeholder="Filter by name…"
+            style={{
+              flex: 1, height:34, borderRadius:8,
+              border:"1px solid rgba(255,255,255,0.12)", background:"#0f172a", color:"#e5e7eb",
+              padding:"0 10px", fontSize:13
+            }}
+          />
+          <button
+            onClick={resetCategories}
+            style={{
+              height:34, padding:"0 10px", borderRadius:8,
+              border:"1px solid rgba(255,255,255,0.12)", background:"#0f172a", color:"#e5e7eb",
+              fontSize:12
+            }}
+          >
+            Clear
+          </button>
+        </div>
+
+        <label style={{ marginTop:12, fontSize:13, display:"flex", gap:8, alignItems:"center" }}>
+          <input type="checkbox" checked={showDenomsToggle} onChange={e=>{ const v=e.target.checked; setShowDenomsToggle(v); if(!v) setFocusParentId(null); }} />
+          Enable denomination drill-down on click
+        </label>
+
+        {/* Time Filter */}
+        <TimeFilter
+          domain={domainYears}
+          value={timeRange}
+          enabled={timeEnabled}
+          onToggle={setTimeEnabled}
+          onChange={(v) => setTimeRange(v)}
+          onAfterChange={(v) => setTimeRange(v)}
+        />
+
+        <div style={{ marginTop:16, fontWeight:800, fontSize:13, opacity:0.85 }}>
+          {focusParentId ? "Denominations" : "Visible Traditions"}
+        </div>
+        <div style={{ marginTop:8, display:"grid", gap:6 }}>
+          {(focusParentId ? visibleChildren : filteredTopLevel).map(t => (
+            <button
+              key={t.id}
+              onClick={()=>onPointClick(t)}
+              style={{
+                textAlign:"left", padding:"10px 12px",
+                borderRadius:10, border:"1px solid rgba(255,255,255,0.08)", background:"#0f172a", color:"#e5e7eb"
+              }}
+            >
+              <div style={{ fontWeight:700, fontSize:13 }}>{S(t.name)}</div>
+              <div style={{ fontSize:11, color:"#94a3b8" }}>
+                {S(t.family)} · {fmtYear(t.start_high ?? t.start_low)} – {fmtYear(t.end_low ?? t.end_high)}
+              </div>
+            </button>
+          ))}
+          {!visiblePoints.length && selectedCats.size>0 && (
+            <div style={{ fontSize:12, color:"#94a3b8" }}>No results.</div>
+          )}
+          {selectedCats.size===0 && (
+            <div style={{ fontSize:12, color:"#94a3b8" }}>
+              Select one or more categories to display points.
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Globe */}
+      <Globe
+        ref={globeRef}
+        backgroundColor="#020617"
+        globeImageUrl="//unpkg.com/three-globe/example/img/earth-blue-marble.jpg"
+        showAtmosphere atmosphereColor="lightskyblue" atmosphereAltitude={0.12}
+        showGraticules graticuleColor="rgba(255,255,255,0.12)"
+        polygonsData={countries}
+        polygonCapColor={()=>"rgba(255,255,255,0.06)"} polygonSideColor={()=>"rgba(255,255,255,0.03)"} polygonStrokeColor={()=>"rgba(255,255,255,0.35)"}
+        polygonAltitude={()=>0.003}
+
+        pointsData={pointsForGlobe}
+        pointLat={d=>d.lat} pointLng={d=>d.lng}
+        pointColor={d=>d.id===hoverId ? "#fff" : d.color}
+        pointRadius={d=>d.id===hoverId ? 0.9 : 0.55}
+        pointAltitude={d=>d.id===hoverId ? 0.06 : 0.03}
+        onPointHover={d=>setHoverIdThrottled(d?d.id:null)}
+        onPointClick={d=>onPointClick(d)}
+
+        labelsData={labelsForGlobe}
+        labelLat={d=>d.lat} labelLng={d=>d.lng}
+        labelText={d=>d.icon || ICON_CHAR.default}
+        labelSize={d => (d.id===hoverId ? 1.6 : 1.2)}
+        labelDotRadius={0}
+        labelColor={d=>d.id===hoverId ? "#ffffff" : d.color}
+        labelResolution={2}
+
+        arcsData={arcsForGlobe}
+        arcStartLat={d=>d.startLat} arcStartLng={d=>d.startLng}
+        arcEndLat={d=>d.endLat} arcEndLng={d=>d.endLng}
+        arcColor={d=>d.color}
+        arcStroke={0.6}
+        arcDashLength={0.4} arcDashGap={0.2} arcDashAnimateTime={1200}
+
+        style={{ position:"absolute", inset:0, zIndex:Z_GLOBE }}
+      />
+
+      {/* Hover preview */}
+      {hoverPreview && (
+        <div style={{
+          position:"fixed", right:18, top:68, width:420, maxWidth:"calc(100vw - 380px)",
+          zIndex:Z_POPUP, background:"rgba(15,23,42,0.95)", border:"1px solid rgba(255,255,255,0.12)",
+          color:"#e5e7eb", borderRadius:12, padding:"12px 14px", pointerEvents:"none",
+          boxShadow:"0 12px 30px rgba(0,0,0,0.5)"
+        }}>
+          <div style={{ fontWeight:800, fontSize:13 }}>{hoverPreview.name}</div>
+          <div style={{ fontSize:11, opacity:0.85, marginBottom:6 }}>
+            {hoverPreview.family} · {hoverPreview.range}
+          </div>
+          <div style={{ fontSize:12, lineHeight:1.5 }}>{hoverPreview.text}</div>
+          <div style={{ fontSize:11, opacity:0.7, marginTop:8 }}>
+            Click to {childrenByParent.get(hoverPreview.id)?.length ? "view denominations" : "open details"}.
+          </div>
+        </div>
+      )}
+
+      {/* Selected profile */}
+      {selected && (
+        <div style={{
+          position:"fixed", right:16, top:72, width:640, maxWidth:"calc(100vw - 32px)", maxHeight:"82vh",
+          display:"flex", flexDirection:"column", zIndex:Z_POPUP, background:"#ffffff", color:"#0f172a",
+          borderRadius:14, boxShadow:"0 14px 34px rgba(0,0,0,0.3)", border:"1px solid rgba(0,0,0,0.06)"
+        }}>
+          <div style={{ display:"flex", alignItems:"center", padding:"12px 14px", borderBottom:"1px solid rgba(0,0,0,0.06)" }}>
+            <div style={{ fontWeight:800, fontSize:16, flex:1 }}>{S(selected.name)}</div>
+            <div style={{ fontSize:12, color:"#6b7280", marginRight:10 }}>
+              {S(selected.family)}
+            </div>
+            <button onClick={()=>setSelectedId(null)} title="Close"
+              style={{ width:30, height:30, borderRadius:8, background:"#f3f4f6", border:"1px solid #e5e7eb" }} aria-label="Close">×</button>
+          </div>
+
+          {/* Tabs */}
+          <Tabs profile={profile} setPdfUrl={setPdfUrl} />
+        </div>
+      )}
+
+      {/* PDF modal */}
+      <PdfModal url={pdfUrl} onClose={()=>setPdfUrl(null)} />
+    </div>
+  );
+}
+
+// ---------- Tabbed detail content ----------
+function Tabs({ profile, setPdfUrl }) {
+  const [activeTab, setActiveTab] = useState("overview");
+  const has = (k) => {
+    const v = profile?.[k];
+    return Array.isArray(v) ? v.length > 0 : !!v;
+  };
+
+  const tabs = [
+    ["overview","Overview", has("overview")],
+    ["tech","Techniques", has("techniques")],
+    ["life","Lifestyle", !!profile.lifestyle],
+    ["texts","Texts", has("texts")],
+    ["sources","Sources", has("sources")]
+  ].filter(Boolean);
+
+  return (
+    <>
+      <div style={{ display:"flex", gap:8, padding:"8px 12px", borderBottom:"1px solid rgba(0,0,0,0.06)", background:"#fafafa", position:"sticky", top:0 }}>
+        {tabs.map(([k,label])=>(
+          <button key={k} onClick={()=>setActiveTab(k)}
+            style={{
+              padding:"6px 10px", borderRadius:8, border:"1px solid #e5e7eb",
+              background: activeTab===k ? "#111827" : "#ffffff",
+              color: activeTab===k ? "#f8fafc" : "#111827",
+              fontSize:12, fontWeight:600
+            }}>{label}</button>
+        ))}
+      </div>
+
+      <div style={{ padding:"12px 14px", overflowY:"auto" }}>
+        {activeTab==="overview" && (
+          <>
+            <h4 style={{ fontWeight:800, fontSize:13, margin:"4px 0 8px", color:"#0b1324" }}>Scholarly Overview</h4>
+            <pre style={{ whiteSpace:"pre-wrap", fontFamily:"ui-sans-serif, system-ui", fontSize:13, lineHeight:1.58, color:"#0b1324" }}>
+{S(profile.overview) || "No overview available yet."}
+            </pre>
+          </>
+        )}
+
+        {activeTab==="tech" && (
+          <>
+            <h4 style={{ fontWeight:800, fontSize:13, margin:"4px 0 8px", color:"#0b1324" }}>Techniques</h4>
+            {Array.isArray(profile.techniques) && profile.techniques.length ? (
+              <ol style={{ paddingLeft:18, margin:0, fontSize:13, lineHeight:1.55 }}>
+                {profile.techniques.map((t,i)=>(
+                  <li key={i} style={{ marginBottom:12 }}>
+                    <div style={{ fontWeight:700 }}>{S(t.name)}</div>
+                    {Array.isArray(t.steps) && t.steps.length ? (
+                      <ul style={{ margin:"4px 0 4px 16px" }}>
+                        {t.steps.map((s,idx)=><li key={idx} style={{ marginBottom:2 }}>{S(s)}</li>)}
+                      </ul>
+                    ) : null}
+                    {t.context ? <div style={{ fontSize:12, opacity:0.85 }}><b>Context:</b> {S(t.context)}</div> : null}
+                    {t.variants && t.variants.length ? <div style={{ fontSize:12, opacity:0.85 }}><b>Variants:</b> {J(t.variants)}</div> : null}
+                    {t.cautions ? <div style={{ fontSize:12, color:"#b91c1c" }}><b>Cautions:</b> {S(t.cautions)}</div> : null}
+                  </li>
+                ))}
+              </ol>
+            ) : <div style={{ fontSize:13, color:"#6b7280" }}>No techniques recorded.</div>}
+          </>
+        )}
+
+        {activeTab==="life" && (
+          <>
+            <h4 style={{ fontWeight:800, fontSize:13, margin:"4px 0 8px", color:"#0b1324" }}>Lifestyle & Ethos</h4>
+            {profile.lifestyle ? (
+              <div style={{ fontSize:13, lineHeight:1.55 }}>
+                {profile.lifestyle.ethos ? <div><b>Ethos:</b> {S(profile.lifestyle.ethos)}</div> : null}
+                {profile.lifestyle.rules && profile.lifestyle.rules.length ? <div><b>Rules:</b> {J(profile.lifestyle.rules)}</div> : null}
+                {profile.lifestyle.diet ? <div><b>Diet:</b> {S(profile.lifestyle.diet)}</div> : null}
+                {profile.lifestyle.community ? <div><b>Community:</b> {S(profile.lifestyle.community)}</div> : null}
+              </div>
+            ) : <div style={{ fontSize:13, color:"#6b7280" }}>No lifestyle details recorded.</div>}
+          </>
+        )}
+
+        {activeTab==="texts" && (
+          <>
+            <h4 style={{ fontWeight:800, fontSize:13, margin:"4px 0 8px", color:"#0b1324" }}>Texts & Documents</h4>
+            {Array.isArray(profile.texts) && profile.texts.length ? (
+              <ol style={{ paddingLeft:18, margin:0, fontSize:12.8, lineHeight:1.55 }}>
+                {profile.texts.map((d,i)=>{
+                  const url = d.link || "";
+                  const isPdf = /\.pdf(\?|#|$)/i.test(url);
+                  const label = [S(d.title), S(d.author && `— ${d.author}`), S(d.date && `(${d.date})`)].filter(Boolean).join(" ");
+                  return (
+                    <li key={i} style={{ marginBottom:8 }}>
+                      {url ? (isPdf ? (
+                        <button onClick={()=>setPdfUrl(url)} style={{ border:0, background:"none", color:"#1d4ed8", cursor:"pointer", padding:0 }}>
+                          {label || "PDF"}
+                        </button>
+                      ) : (
+                        <a href={url} target="_blank" rel="noreferrer" style={{ color:"#1d4ed8" }}>
+                          {label || "Link"}
+                        </a>
+                      )) : <span>{label || "Untitled"}</span>}
+                      {d.genre ? <span style={{ opacity:0.75 }}> — {S(d.genre)}</span> : null}
+                    </li>
+                  );
+                })}
+              </ol>
+            ) : <div style={{ fontSize:13, color:"#6b7280" }}>No texts recorded.</div>}
+          </>
+        )}
+
+        {activeTab==="sources" && (
+          <>
+            <h4 style={{ fontWeight:800, fontSize:13, margin:"4px 0 8px", color:"#0b1324" }}>Bibliography & Open Sources</h4>
+            {Array.isArray(profile.sources) && profile.sources.length ? (
+              <ol style={{ paddingLeft:18, margin:0, fontSize:12.8, lineHeight:1.55 }}>
+                {profile.sources.map((s,i)=>(<li key={i} style={{ marginBottom:8 }}>{S(s)}</li>))}
+              </ol>
+            ) : <div style={{ fontSize:13, color:"#6b7280" }}>No bibliography yet.</div>}
+          </>
+        )}
+      </div>
+    </>
+  );
+}
